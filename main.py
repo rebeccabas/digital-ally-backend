@@ -5,11 +5,23 @@ from datetime import datetime
 from typing import Optional, Literal
 from dotenv import load_dotenv
 import os
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.status import HTTP_200_OK
+from starlette.responses import Response
 
 load_dotenv()
 app = FastAPI(title="Enhanced Support System and Complaint Generator")
+
 genai.configure(api_key=os.getenv('API_KEY'))
 model = genai.GenerativeModel('gemini-pro')
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5174", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class Config:
     EMERGENCY_HOTLINE = os.getenv('EMERGENCY_HOTLINE', '1-800-799-SAFE')
@@ -223,7 +235,6 @@ async def get_support_chat(message: SupportMessage):
         return {
             "response": response.text
         }
-
     except Exception as e:
         if Config.DEBUG:
             raise HTTPException(status_code=500, detail=str(e))
@@ -231,6 +242,10 @@ async def get_support_chat(message: SupportMessage):
             status_code=500,
             detail="We're having trouble processing your message. If you need immediate help, please call " + Config.EMERGENCY_HOTLINE
         )
+
+@app.options("/api/support-chat")
+async def options_support_chat():
+    return Response(status_code=HTTP_200_OK)
 
 if __name__ == "__main__":
     import uvicorn
