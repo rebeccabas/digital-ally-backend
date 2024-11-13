@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 import google.generativeai as genai
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, List
 from dotenv import load_dotenv
 import os
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,9 +15,12 @@ app = FastAPI(title="Enhanced Support System and Complaint Generator")
 genai.configure(api_key=os.getenv('API_KEY'))
 model = genai.GenerativeModel('gemini-pro')
 
+# Store chat histories in memory (session_id -> messages)
+chat_histories: Dict[str, List[dict]] = {}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5174", "http://localhost:3000"],
+    allow_origins=["http://localhost:5174", "http://localhost:3000","http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,22 +53,31 @@ class ComplaintInfo(BaseModel):
 
 class SupportMessage(BaseModel):
     message: str
+    session_id: str
+
+class ChatHistory(BaseModel):
+    session_id: str
 
 SUPPORT_CHAT_PROMPT = """
-You are an empathetic support chatbot for people affected by domestic violence. Always:
-1. Respond with care and understanding
-2. Validate their feelings and experiences
-3. Prioritize their safety and well-being
-4. Provide emotional support first
-5. Share information only if specifically asked
-6. Use gentle, supportive language
-7. Avoid judgmental statements
-8. Remember this is a sensitive situation
+You are a compassionate and supportive chatbot designed to assist individuals affected by domestic violence, Dont hallucinate too much for things like "Hi" and "Hello" and reply with "Hello how can i help you" for these. The response should be short and to the point but affectionate and a bit long when needed. Your main goal is to provide empathetic, actionable advice while ensuring the user's safety. Always:
 
-User message: {message}
+1. Avoid generix responses and validate their feelings and provide emotional support. Reply as per context and if its something besides talking about facing violence say that you are a support chatbot and you dont have idea about what the user is talking about.
+2. Offer clear, actionable steps to enhance their safety (like creating a safety plan).
+3. Suggest available resources (such as hotlines or legal aid) if appropriate.
+4. Respond in a way that feels personal and caring.
+5. Respect their autonomy; don’t pressure them into taking actions they’re uncomfortable with.
+6. Remind them that they’re not alone, and that support is available but dont reply that everytime.
+7. Provide them with support hotlines numbers from NEPAL to seek for help. Make sure the helplines are strictly from nepal.
 
-Provide a caring, supportive response:
+
+Previous conversation:
+{history}
+
+User message: {message} 
+
+Based on the user's message and context from the previous conversation, provide a warm, specific, and practical response. Focus on helping the user feel supported, offering resources or steps if appropriate, and acknowledging their strength and courage:
 """
+
 
 COMPLAINT_LETTER_TEMPLATE = """
 {current_date}
@@ -229,11 +241,34 @@ to ensure my safety and protection."""
 @app.post("/api/support-chat")
 async def get_support_chat(message: SupportMessage):
     try:
-        prompt = SUPPORT_CHAT_PROMPT.format(message=message.message)
+        # Initialize chat history for new sessions
+        if message.session_id not in chat_histories:
+            chat_histories[message.session_id] = []
+        
+        # Get chat history
+        history = chat_histories[message.session_id]
+        
+        # Format history for the prompt
+        history_text = "\n".join([
+            f"{'User' if msg['isUser'] else 'Assistant'}: {msg['text']}"
+            for msg in history[-5:]  # Keep last 5 messages for context
+        ])
+        
+        # Generate response with context
+        prompt = SUPPORT_CHAT_PROMPT.format(
+            history=history_text,
+            message=message.message
+        )
+        
         response = model.generate_content(prompt)
         
+        # Store the conversation
+        history.append({"text": message.message, "isUser": True})
+        history.append({"text": response.text, "isUser": False})
+        
         return {
-            "response": response.text
+            "response": response.text,
+            "session_id": message.session_id
         }
     except Exception as e:
         if Config.DEBUG:
@@ -242,6 +277,12 @@ async def get_support_chat(message: SupportMessage):
             status_code=500,
             detail="We're having trouble processing your message. If you need immediate help, please call " + Config.EMERGENCY_HOTLINE
         )
+
+@app.get("/api/chat-history/{session_id}")
+async def get_chat_history(session_id: str):
+    if session_id not in chat_histories:
+        return {"messages": []}
+    return {"messages": chat_histories[session_id]}
 
 @app.options("/api/support-chat")
 async def options_support_chat():
